@@ -71,7 +71,6 @@ export async function setEntityCompleteAction(input: {
         { onConflict: "lesson_id,profile_id" }
       );
     }
-    revalidatePath("/dashboard");
     return { success: true, data: { result } };
   } catch (error) {
     const message = formatDbError(error, "Failed to update progress.");
@@ -91,10 +90,9 @@ export async function setEntityNoteAction(
     await repo.upsertEntityNote(user.id, entityId, note);
     return { success: true };
   } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Failed to save note.",
-    };
+    const message = formatDbError(error, "Failed to save note.");
+    console.error("[progress] setEntityNoteAction", entityId, error);
+    return { success: false, error: message };
   }
 }
 

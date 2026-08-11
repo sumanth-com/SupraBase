@@ -7,7 +7,7 @@ import type {
   MentorResponseMode,
 } from "@/features/ai-mentor/types";
 import { AI_MENTOR_ROUTES } from "@/features/ai-mentor/types";
-import { listMessagesAction } from "@/features/ai-mentor/actions/mentor-actions";
+import { fetchMessages } from "@/features/ai-mentor/lib/mentor-client";
 import { friendlyLlmError } from "@/features/ai-mentor/providers/types";
 
 type StreamMode = "send" | "regenerate" | "continue" | "edit";
@@ -28,10 +28,17 @@ export function useMentorChat(conversationId: string | null) {
   const streamedByIdRef = useRef<Record<string, string>>({});
   const flushRafRef = useRef<number | null>(null);
   const assistantIdRef = useRef<string | null>(null);
+  const skipHydrateRef = useRef(false);
+  const sendingRef = useRef(false);
 
   useEffect(() => {
     conversationRef.current = conversationId;
   }, [conversationId]);
+
+  const prepareConversation = useCallback((id: string) => {
+    skipHydrateRef.current = true;
+    conversationRef.current = id;
+  }, []);
 
   const loadMessages = useCallback(async (id: string, opts?: { silent?: boolean }) => {
     const seq = ++requestSeq.current;
@@ -39,21 +46,33 @@ export function useMentorChat(conversationId: string | null) {
       setIsLoading(true);
       setError(null);
     }
-    const result = await listMessagesAction(id);
+    const result = await fetchMessages(id);
     if (seq !== requestSeq.current) return;
     if (conversationRef.current !== id) return;
     if (!opts?.silent) setIsLoading(false);
     if (!result.success) {
       if (!opts?.silent) {
         setError(result.error);
-        setMessages([]);
       }
       return;
     }
-    setMessages(result.data?.messages ?? []);
+    const next = result.data.messages ?? [];
+    setMessages((prev) => {
+      if (opts?.silent && prev.some((m) => m.status === "streaming")) {
+        return prev;
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
+    if (skipHydrateRef.current && conversationId) {
+      skipHydrateRef.current = false;
+      conversationRef.current = conversationId;
+      setIsLoading(false);
+      return;
+    }
+
     // Switching chats: cancel in-flight stream so tokens don't land on the wrong thread.
     abortRef.current?.abort();
     abortRef.current = null;
@@ -69,6 +88,7 @@ export function useMentorChat(conversationId: string | null) {
     if (!conversationId) {
       setMessages([]);
       setError(null);
+      setIsLoading(false);
       return;
     }
     void loadMessages(conversationId);
@@ -125,10 +145,12 @@ export function useMentorChat(conversationId: string | null) {
       learningContext?: LearningContext | null,
       messageId?: string,
       attachmentIds?: string[],
-      responseMode: MentorResponseMode = "suggested"
+      responseMode: MentorResponseMode = "suggested",
+      conversationIdOverride?: string
     ): Promise<StreamMeta | null> => {
-      if (!conversationId) return null;
-      const streamForId = conversationId;
+      const streamForId = conversationIdOverride ?? conversationId;
+      if (!streamForId) return null;
+      conversationRef.current = streamForId;
 
       // Cancel any previous stream on this hook instance.
       abortRef.current?.abort();
@@ -293,6 +315,10 @@ export function useMentorChat(conversationId: string | null) {
             if (event === "meta") {
               assistantId = String(data.assistantMessageId ?? "");
               const id = assistantId;
+              const persistedUserId =
+                typeof data.userMessageId === "string" && data.userMessageId
+                  ? data.userMessageId
+                  : null;
               if (!id) continue;
               assistantIdRef.current = id;
               const early = tokenBufferRef.current;
@@ -300,13 +326,26 @@ export function useMentorChat(conversationId: string | null) {
               streamedByIdRef.current[id] =
                 (streamedByIdRef.current[id] ?? "") + early;
               setMessages((prev) => {
-                const tempIdx = prev.findIndex((m) =>
+                let next = prev;
+                if (persistedUserId) {
+                  const tempUserIdx = next.findIndex((m) =>
+                    m.id.startsWith("temp-user")
+                  );
+                  if (tempUserIdx >= 0) {
+                    next = [...next];
+                    next[tempUserIdx] = {
+                      ...next[tempUserIdx]!,
+                      id: persistedUserId,
+                    };
+                  }
+                }
+                const tempIdx = next.findIndex((m) =>
                   m.id.startsWith("temp-assistant")
                 );
                 if (tempIdx >= 0) {
-                  const next = [...prev];
-                  const temp = next[tempIdx]!;
-                  next[tempIdx] = {
+                  const copy = [...next];
+                  const temp = copy[tempIdx]!;
+                  copy[tempIdx] = {
                     ...temp,
                     id,
                     content: streamedByIdRef.current[id] ?? temp.content,
@@ -314,13 +353,11 @@ export function useMentorChat(conversationId: string | null) {
                     model: (data.model as string) ?? temp.model,
                     error: null,
                   };
-                  return next.filter(
-                    (m, i) => i === tempIdx || m.id !== id
-                  );
+                  return copy.filter((m, i) => i === tempIdx || m.id !== id);
                 }
-                if (prev.some((m) => m.id === id)) return prev;
+                if (next.some((m) => m.id === id)) return next;
                 return [
-                  ...prev,
+                  ...next,
                   {
                     id,
                     conversation_id: streamForId,
@@ -410,14 +447,6 @@ export function useMentorChat(conversationId: string | null) {
           }
         }
 
-        // Soft reconcile with DB — only if still on the same chat.
-        if (conversationRef.current === streamForId) {
-          window.setTimeout(() => {
-            if (conversationRef.current === streamForId) {
-              void loadMessages(streamForId, { silent: true });
-            }
-          }, 400);
-        }
         return meta;
       } catch (err) {
         if ((err as Error).name === "AbortError") {
@@ -448,9 +477,6 @@ export function useMentorChat(conversationId: string | null) {
               : m
           )
         );
-        if (conversationRef.current === streamForId) {
-          void loadMessages(streamForId, { silent: true });
-        }
         return null;
       } finally {
         if (conversationRef.current === streamForId) {
@@ -464,7 +490,7 @@ export function useMentorChat(conversationId: string | null) {
         streamedByIdRef.current = {};
       }
     },
-    [conversationId, flushTokens, loadMessages, queueToken]
+    [conversationId, flushTokens, queueToken]
   );
 
   const send = useCallback(
@@ -472,16 +498,23 @@ export function useMentorChat(conversationId: string | null) {
       content: string,
       learningContext?: LearningContext | null,
       attachmentIds?: string[],
-      responseMode: MentorResponseMode = "suggested"
-    ) =>
-      runStream(
+      responseMode: MentorResponseMode = "suggested",
+      conversationIdOverride?: string
+    ) => {
+      if (sendingRef.current) return Promise.resolve(null);
+      sendingRef.current = true;
+      return runStream(
         "send",
         content,
         learningContext,
         undefined,
         attachmentIds,
-        responseMode
-      ),
+        responseMode,
+        conversationIdOverride
+      ).finally(() => {
+        sendingRef.current = false;
+      });
+    },
     [runStream]
   );
 
@@ -518,6 +551,7 @@ export function useMentorChat(conversationId: string | null) {
     stop,
     regenerate,
     continueResponse,
+    prepareConversation,
     reload: () =>
       conversationId ? loadMessages(conversationId) : Promise.resolve(),
   };

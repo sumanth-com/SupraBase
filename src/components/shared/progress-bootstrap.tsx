@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { useProgressStore } from "@/store/use-progress-store";
+import { useProgressHydration } from "@/store/use-progress-hydration";
 import { useCurriculum } from "@/hooks/use-curriculum";
 import { useStoreHydrated } from "@/hooks/use-store-hydrated";
 import { useUser } from "@/hooks/use-user";
@@ -39,13 +40,17 @@ export function ProgressBootstrap({ seedUser }: { seedUser?: SeedUser }) {
     if (!activeId && isLoading && !seedUser) return;
 
     const requestId = ++requestIdRef.current;
+    const hydration = useProgressHydration.getState();
 
     void (async () => {
       if (!activeId) {
         boundUserRef.current = null;
+        hydration.reset();
         await clearClientWorkspace();
         return;
       }
+
+      hydration.setLoading();
 
       if (boundUserRef.current !== activeId) {
         await bindClientWorkspace(activeId);
@@ -59,10 +64,14 @@ export function ProgressBootstrap({ seedUser }: { seedUser?: SeedUser }) {
         const store = useProgressStore.getState();
         store.hydrateFromServer(workspace);
         store.bootstrapSession();
+        useProgressHydration.getState().setReady();
         void refreshNotificationsFromServer();
       } else if (error) {
         console.error("[progress] workspace hydrate failed", error);
+        useProgressHydration.getState().setError(error);
         toast.error(`Progress did not load: ${error}`);
+      } else {
+        useProgressHydration.getState().setReady();
       }
 
       if (displayName) {
@@ -72,9 +81,28 @@ export function ProgressBootstrap({ seedUser }: { seedUser?: SeedUser }) {
         });
       }
     })();
-  }, [activeId, displayName, isLoading, seedUser]);
+  }, [activeId, displayName, isLoading, seedUser?.id]);
 
   return null;
+}
+
+/** Shown when the database progress fetch failed — never pretend the user has 0%. */
+export function ProgressHydrationBanner() {
+  const status = useProgressHydration((s) => s.status);
+  const error = useProgressHydration((s) => s.error);
+
+  if (status !== "error" || !error) return null;
+
+  return (
+    <div
+      role="alert"
+      className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-center text-xs text-rose-200 sm:text-sm"
+    >
+      Couldn&apos;t load your learning progress. This is not 0% — refresh to try
+      again.
+      <span className="ml-2 hidden text-rose-300/80 sm:inline">{error}</span>
+    </div>
+  );
 }
 
 /** Celebrates when a week is newly fully complete across every learning module. */
@@ -82,11 +110,12 @@ export function ModuleCompletionWatcher() {
   const weeks = useCurriculum();
   const progress = useProgressStore((s) => s.progress);
   const hydrated = useStoreHydrated();
+  const serverReady = useProgressHydration((s) => s.status === "ready");
   const prevCompleteRef = useRef<Record<number, boolean>>({});
   const syncedBaselineRef = useRef(false);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !serverReady) return;
 
     const completedIds: number[] = [];
 
@@ -115,7 +144,7 @@ export function ModuleCompletionWatcher() {
       syncCelebratedWeeks(completedIds);
       syncedBaselineRef.current = true;
     }
-  }, [weeks, progress.completed, hydrated]);
+  }, [weeks, progress.completed, hydrated, serverReady]);
 
   return null;
 }

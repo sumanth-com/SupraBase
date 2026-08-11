@@ -89,11 +89,25 @@ export function syncEntityComplete(
   void persistEntityComplete(entityId, completed, xp);
 }
 
+export async function persistEntityNote(
+  entityId: string,
+  note: string
+): Promise<boolean> {
+  try {
+    const result = await setEntityNoteAction(entityId, note);
+    assertOk(result, "save entity note");
+    return true;
+  } catch (error) {
+    console.error("[progress-sync] persistEntityNote", entityId, error);
+    toast.error(
+      error instanceof Error ? error.message : "Note did not save. Try again."
+    );
+    return false;
+  }
+}
+
 export function syncEntityNote(entityId: string, note: string) {
-  sync(
-    () => setEntityNoteAction(entityId, note).then((r) => assertOk(r, "save entity note")),
-    "entity note"
-  );
+  void persistEntityNote(entityId, note);
 }
 
 export function syncBookmark(entityId: string, on: boolean) {
@@ -189,33 +203,44 @@ export function syncStudySession(hours: number, weekId: number) {
 const pendingNoteIds = new Map<string, Promise<string | null>>();
 
 export async function persistAddNote(note: AppNote): Promise<string | null> {
-  const result = await upsertLearnerNoteAction({
-    id: isUuid(note.id) ? note.id : undefined,
-    title: note.title,
-    content: note.content,
-    weekId: note.weekId ?? null,
-    pinned: note.pinned,
-    accent: note.accent ?? null,
-  });
-  if (!result.success) {
-    console.error("[progress-sync] persistAddNote", result.error);
-    toast.error(result.error);
-    return null;
-  }
-  return result.data?.id ?? null;
+  const inflight = pendingNoteIds.get(note.id);
+  if (inflight) return inflight;
+
+  const pending = (async () => {
+    const result = await upsertLearnerNoteAction({
+      id: isUuid(note.id) ? note.id : undefined,
+      title: note.title,
+      content: note.content,
+      weekId: note.weekId ?? null,
+      pinned: note.pinned,
+      accent: note.accent ?? null,
+    });
+    if (!result.success) {
+      pendingNoteIds.delete(note.id);
+      console.error("[progress-sync] persistAddNote", result.error);
+      toast.error(result.error);
+      return null;
+    }
+    return result.data?.id ?? null;
+  })();
+
+  pendingNoteIds.set(note.id, pending);
+  return pending;
 }
 
 export function syncAddNote(note: AppNote) {
   const pending = persistAddNote(note);
-  pendingNoteIds.set(note.id, pending);
   void pending.catch((error) => {
     console.error("[progress-sync] add note", error);
   });
   return pending;
 }
 
-export function syncUpdateNote(id: string, updates: Partial<AppNote>) {
-  sync(async () => {
+export async function persistUpdateNote(
+  id: string,
+  updates: Partial<AppNote>
+): Promise<string | null> {
+  try {
     const serverId = isUuid(id)
       ? id
       : ((await pendingNoteIds.get(id)) ?? null);
@@ -229,9 +254,8 @@ export function syncUpdateNote(id: string, updates: Partial<AppNote>) {
         weekId: updates.weekId,
         accent: updates.accent,
       });
-      if (!inserted) {
-        throw new Error("Note did not save.");
-      }
+      if (!inserted) return null;
+      pendingNoteIds.set(id, Promise.resolve(inserted));
       return inserted;
     }
     const result = await upsertLearnerNoteAction({
@@ -242,8 +266,19 @@ export function syncUpdateNote(id: string, updates: Partial<AppNote>) {
       pinned: updates.pinned,
       accent: updates.accent,
     });
-    assertOk(result, "update note");
-  }, "update note");
+    const saved = assertOk(result, "update note");
+    return saved?.id ?? serverId;
+  } catch (error) {
+    console.error("[progress-sync] persistUpdateNote", id, error);
+    toast.error(
+      error instanceof Error ? error.message : "Note did not save. Try again."
+    );
+    return null;
+  }
+}
+
+export function syncUpdateNote(id: string, updates: Partial<AppNote>) {
+  void persistUpdateNote(id, updates);
 }
 
 export function syncDeleteNote(id: string) {

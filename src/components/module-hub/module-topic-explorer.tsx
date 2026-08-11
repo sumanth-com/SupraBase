@@ -43,6 +43,7 @@ import { DIFFICULTY_LABELS } from "@/learning-engine/labels";
 import type { LearnDifficulty } from "@/learning-engine/types";
 import { useProgressStore } from "@/store/use-progress-store";
 import { useStoreHydrated } from "@/hooks/use-store-hydrated";
+import { useProgressHydration } from "@/store/use-progress-hydration";
 import { useTrackResumePosition } from "@/hooks/use-resume-position";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
@@ -147,6 +148,7 @@ function ModuleTopicExplorerInner({
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const hydrated = useStoreHydrated();
+  const hydrationStatus = useProgressHydration((s) => s.status);
 
   const cards = useMemo(
     () => buildTopicCards(detail.lessons, moduleSlug),
@@ -295,9 +297,12 @@ function ModuleTopicExplorerInner({
       : { topicTitle: detail.module.title }
   );
 
-  const displayProgress = hydrated
+  const progressReady = hydrated && hydrationStatus === "ready";
+  const progressFailed = hydrationStatus === "error";
+  const displayProgress = progressReady || progressFailed
     ? challengeProgress
     : { completed: 0, total: challengeProgress.total, percent: 0 };
+  const showProgressCounts = progressReady || (progressFailed && challengeProgress.completed > 0);
 
   const savedCount = useMemo(() => {
     if (!hydrated) return 0;
@@ -330,11 +335,13 @@ function ModuleTopicExplorerInner({
                 className="text-xs tabular-nums text-zinc-500 sm:text-sm"
                 suppressHydrationWarning
               >
-                {hydrated
-                  ? drillStyle
-                    ? `Drills ready: ${displayProgress.completed}/${displayProgress.total} · Topics: ${detail.completedCount}/${detail.totalCount}`
-                    : `Challenges: ${displayProgress.completed}/${displayProgress.total} · Topics: ${detail.completedCount}/${detail.totalCount}`
-                  : "\u00a0"}
+                {progressFailed && !showProgressCounts
+                  ? "Progress unavailable"
+                  : showProgressCounts
+                    ? drillStyle
+                      ? `Drills ready: ${displayProgress.completed}/${displayProgress.total} · Topics: ${detail.completedCount}/${detail.totalCount}`
+                      : `Challenges: ${displayProgress.completed}/${displayProgress.total} · Topics: ${detail.completedCount}/${detail.totalCount}`
+                    : "\u00a0"}
               </p>
             </div>
             {detail.module.description ? (
@@ -360,7 +367,11 @@ function ModuleTopicExplorerInner({
               className="min-w-[2.5rem] text-right text-sm font-semibold tabular-nums text-primary"
               suppressHydrationWarning
             >
-              {hydrated ? `${displayProgress.percent}%` : "\u00a0"}
+              {progressFailed && !showProgressCounts
+                ? "—"
+                : showProgressCounts
+                  ? `${displayProgress.percent}%`
+                  : "\u00a0"}
             </span>
           </div>
         </div>

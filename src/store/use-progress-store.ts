@@ -64,7 +64,7 @@ import {
   syncResume,
   syncStudySession,
   syncAddNote,
-  syncUpdateNote,
+  persistUpdateNote,
   syncWeekNote,
 } from "@/features/progress/lib/progress-sync";
 import type { LearnerWorkspace } from "@/features/progress/lib/workspace-mapper";
@@ -891,7 +891,12 @@ export const useProgressStore = create<ProgressStore>()(
             n.id === id ? { ...n, ...updates, updatedAt: new Date().toISOString() } : n
           ),
         }));
-        syncUpdateNote(id, updates);
+        void persistUpdateNote(id, updates).then((serverId) => {
+          if (!serverId || serverId === id) return;
+          set((s) => ({
+            notes: s.notes.map((n) => (n.id === id ? { ...n, id: serverId } : n)),
+          }));
+        });
       },
       deleteNote: (id) => {
         set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
@@ -968,11 +973,24 @@ export async function rehydrateProgressWorkspace() {
   const { fetchLearnerWorkspace } = await import(
     "@/features/progress/lib/progress-sync"
   );
-  const { workspace } = await fetchLearnerWorkspace();
+  const { useProgressHydration } = await import(
+    "@/store/use-progress-hydration"
+  );
+  useProgressHydration.getState().setLoading();
+  const { workspace, error } = await fetchLearnerWorkspace();
   if (workspace) {
     useProgressStore.getState().hydrateFromServer(workspace);
+    useProgressStore.getState().bootstrapSession();
+    useProgressHydration.getState().setReady();
+    return;
+  }
+  if (error) {
+    console.error("[progress] rehydrateProgressWorkspace", error);
+    useProgressHydration.getState().setError(error);
+    return;
   }
   useProgressStore.getState().bootstrapSession();
+  useProgressHydration.getState().setReady();
 }
 
 /** Backward-compatible alias */

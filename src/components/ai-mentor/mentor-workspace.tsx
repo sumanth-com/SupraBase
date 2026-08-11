@@ -8,7 +8,7 @@ import {
   useState,
   useTransition,
 } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import type { AiConversationRow } from "@/types/database";
 import type {
@@ -16,9 +16,9 @@ import type {
   MentorResponseMode,
 } from "@/features/ai-mentor/types";
 import {
-  createConversationAction,
-  listConversationsAction,
-} from "@/features/ai-mentor/actions/mentor-actions";
+  createConversationClient,
+  fetchConversations,
+} from "@/features/ai-mentor/lib/mentor-client";
 import { useMentorChat } from "@/hooks/use-mentor-chat";
 import { useProgressStore } from "@/store/use-progress-store";
 import { AnimatePresence, motion } from "framer-motion";
@@ -71,12 +71,22 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
+function syncConversationUrl(id: string | null) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (id) url.searchParams.set("c", id);
+  else url.searchParams.delete("c");
+  url.searchParams.delete("q");
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", next);
+}
+
 export function MentorWorkspace() {
-  const router = useRouter();
-  const pathname = usePathname();
   const searchParams = useSearchParams();
-  const activeId = searchParams.get("c");
   const bootAsk = searchParams.get("q");
+  const [activeId, setActiveId] = useState<string | null>(
+    () => searchParams.get("c")
+  );
 
   const [conversations, setConversations] = useState<AiConversationRow[]>([]);
   const [search, setSearch] = useState("");
@@ -88,6 +98,7 @@ export function MentorWorkspace() {
   const pendingPromptRef = useRef<string | null>(null);
   const pendingResponseModeRef = useRef<MentorResponseMode>("suggested");
   const bootAskHandled = useRef(false);
+  const sendLockRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -116,6 +127,7 @@ export function MentorWorkspace() {
     isStreaming,
     error,
     send,
+    prepareConversation,
     editMessage,
     stop,
     regenerate,
@@ -125,27 +137,23 @@ export function MentorWorkspace() {
   const pendingAttachmentsRef = useRef<string[] | undefined>(undefined);
 
   const refreshConversations = useCallback(async (q?: string) => {
-    const result = await listConversationsAction(q);
+    const result = await fetchConversations(q);
     if (!result.success) {
       toast.error(result.error);
       return;
     }
-    setConversations(result.data?.conversations ?? []);
+    setConversations(result.data.conversations ?? []);
   }, []);
 
   useEffect(() => {
     void refreshConversations(debouncedSearch || undefined);
   }, [refreshConversations, debouncedSearch]);
 
-  const selectConversation = useCallback(
-    (id: string) => {
-      const params = new URLSearchParams(searchParams.toString());
-      params.set("c", id);
-      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-      setMobileSidebar(false);
-    },
-    [pathname, router, searchParams]
-  );
+  const selectConversation = useCallback((id: string) => {
+    setActiveId(id);
+    syncConversationUrl(id);
+    setMobileSidebar(false);
+  }, []);
 
   const restoredConversationRef = useRef(false);
   useEffect(() => {
@@ -163,46 +171,37 @@ export function MentorWorkspace() {
     bootAskHandled.current = true;
     pendingPromptRef.current = bootAsk;
 
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("q");
-    const next = params.toString();
-    router.replace(next ? `${pathname}?${next}` : pathname, { scroll: false });
+    syncConversationUrl(activeId);
 
     if (!activeId) {
       startTransition(async () => {
-        const result = await createConversationAction(learningContext);
+        const result = await createConversationClient(learningContext);
         if (!result.success) {
           pendingPromptRef.current = null;
           toast.error(result.error);
           return;
         }
-        const conversation = result.data?.conversation;
+        const conversation = result.data.conversation;
         if (!conversation) {
           pendingPromptRef.current = null;
           return;
         }
         setConversations((prev) => [conversation, ...prev]);
-        selectConversation(conversation.id);
+        prepareConversation(conversation.id);
+        setActiveId(conversation.id);
+        syncConversationUrl(conversation.id);
       });
     }
-  }, [
-    bootAsk,
-    activeId,
-    learningContext,
-    pathname,
-    router,
-    searchParams,
-    selectConversation,
-  ]);
+  }, [bootAsk, activeId, learningContext, prepareConversation]);
 
   const newChat = useCallback(() => {
     startTransition(async () => {
-      const result = await createConversationAction(learningContext);
+      const result = await createConversationClient(learningContext);
       if (!result.success) {
         toast.error(result.error);
         return;
       }
-      const conversation = result.data?.conversation;
+      const conversation = result.data.conversation;
       if (!conversation) return;
       setConversations((prev) => [conversation, ...prev]);
       selectConversation(conversation.id);
@@ -224,17 +223,9 @@ export function MentorWorkspace() {
             c.id === activeId ? { ...c, title: meta.title! } : c
           )
         );
-      } else {
-        void refreshConversations(debouncedSearch || undefined);
       }
     });
-  }, [
-    activeId,
-    debouncedSearch,
-    learningContext,
-    refreshConversations,
-    send,
-  ]);
+  }, [activeId, learningContext, send]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -267,65 +258,71 @@ export function MentorWorkspace() {
 
   const ensureConversation = useCallback(async () => {
     if (activeId) return activeId;
-    const result = await createConversationAction(learningContext);
+    const result = await createConversationClient(learningContext);
     if (!result.success) {
       toast.error(result.error);
       return null;
     }
-    const conversation = result.data?.conversation;
+    const conversation = result.data.conversation;
     if (!conversation) return null;
     setConversations((prev) => [conversation, ...prev]);
-    selectConversation(conversation.id);
+    prepareConversation(conversation.id);
+    setActiveId(conversation.id);
+    syncConversationUrl(conversation.id);
     return conversation.id;
-  }, [activeId, learningContext, selectConversation]);
+  }, [activeId, learningContext, prepareConversation]);
 
   const handleSend = (
     content: string,
     attachmentIds?: string[],
     responseMode: MentorResponseMode = "suggested"
   ) => {
+    if (sendLockRef.current) return;
     void import("@/lib/analytics").then(({ trackEvent, ANALYTICS_EVENTS }) => {
       trackEvent(ANALYTICS_EVENTS.mentor_chat_started, {
         source: "ai_mentor",
       });
     });
 
+    const applyTitle = (conversationId: string, title?: string) => {
+      if (!title) return;
+      setConversations((prev) =>
+        prev.map((c) => (c.id === conversationId ? { ...c, title } : c))
+      );
+    };
+
     if (activeId) {
-      void send(content, learningContext, attachmentIds, responseMode).then((meta) => {
-        if (meta?.title) {
-          setConversations((prev) =>
-            prev.map((c) =>
-              c.id === activeId ? { ...c, title: meta.title! } : c
-            )
-          );
-        } else {
-          void refreshConversations(debouncedSearch || undefined);
-        }
-      });
+      void send(content, learningContext, attachmentIds, responseMode).then(
+        (meta) => applyTitle(activeId, meta?.title)
+      );
       return;
     }
 
-    pendingPromptRef.current = content;
-    pendingAttachmentsRef.current = attachmentIds;
-    pendingResponseModeRef.current = responseMode;
+    sendLockRef.current = true;
     startTransition(async () => {
-      const result = await createConversationAction(learningContext);
-      if (!result.success) {
-        pendingPromptRef.current = null;
-        pendingAttachmentsRef.current = undefined;
-        pendingResponseModeRef.current = "suggested";
-        toast.error(result.error);
-        return;
+      try {
+        const result = await createConversationClient(learningContext);
+        if (!result.success) {
+          toast.error(result.error);
+          return;
+        }
+        const conversation = result.data.conversation;
+        if (!conversation) return;
+        setConversations((prev) => [conversation, ...prev]);
+        prepareConversation(conversation.id);
+        setActiveId(conversation.id);
+        syncConversationUrl(conversation.id);
+        const meta = await send(
+          content,
+          learningContext,
+          attachmentIds,
+          responseMode,
+          conversation.id
+        );
+        applyTitle(conversation.id, meta?.title);
+      } finally {
+        sendLockRef.current = false;
       }
-      const conversation = result.data?.conversation;
-      if (!conversation) {
-        pendingPromptRef.current = null;
-        pendingAttachmentsRef.current = undefined;
-        pendingResponseModeRef.current = "suggested";
-        return;
-      }
-      setConversations((prev) => [conversation, ...prev]);
-      selectConversation(conversation.id);
     });
   };
 
@@ -457,8 +454,8 @@ export function MentorWorkspace() {
           <MentorChatPane
             title={activeTitle}
             conversationId={activeId}
-            messages={activeId ? messages : []}
-            isLoading={Boolean(activeId) && isLoading}
+            messages={messages}
+            isLoading={Boolean(activeId) && isLoading && messages.length === 0}
             isStreaming={isStreaming || pending}
             error={error}
             onSend={handleSend}

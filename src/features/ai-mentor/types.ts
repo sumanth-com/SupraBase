@@ -32,6 +32,8 @@ export const AI_MENTOR_ROUTES = {
   conversation: (id: string) => `/ai-mentor?c=${id}`,
   chatApi: "/api/ai-mentor/chat",
   attachmentsApi: "/api/ai-mentor/attachments",
+  conversationsApi: "/api/ai-mentor/conversations",
+  messagesApi: "/api/ai-mentor/messages",
 } as const;
 
 export function groupConversationsByRecency(

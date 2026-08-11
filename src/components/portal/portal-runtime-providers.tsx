@@ -1,7 +1,10 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { ProgressBootstrap } from "@/components/shared/progress-bootstrap";
+import {
+  ProgressBootstrap,
+  ProgressHydrationBanner,
+} from "@/components/shared/progress-bootstrap";
 import type { PortalUser } from "@/features/portal/types";
 
 const ModuleCompletionWatcher = dynamic(
@@ -29,6 +32,7 @@ export function PortalRuntimeProviders({
   return (
     <>
       <ProgressBootstrap seedUser={seedUser} />
+      <ProgressHydrationBanner />
       <ModuleCompletionWatcher />
       <WeekCompletionCelebration />
     </>

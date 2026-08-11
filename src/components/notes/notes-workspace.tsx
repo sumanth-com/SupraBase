@@ -24,6 +24,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useProgressStore } from "@/store/use-progress-store";
+import { persistUpdateNote } from "@/features/progress/lib/progress-sync";
 import { useStoreHydrated } from "@/hooks/use-store-hydrated";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
@@ -231,7 +232,7 @@ export function NotesWorkspace() {
   const selected = notes.find((n) => n.id === selectedId) ?? null;
 
   const flushSave = useCallback(
-    (id: string, title: string, content: string) => {
+    async (id: string, title: string, content: string) => {
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
@@ -243,10 +244,35 @@ export function NotesWorkspace() {
         return;
       }
       setSaveStatus("saving");
-      updateNote(id, { title: title || "Untitled Note", content });
+      useProgressStore.setState((s) => ({
+        notes: s.notes.map((n) =>
+          n.id === id
+            ? {
+                ...n,
+                title: title || "Untitled Note",
+                content,
+                updatedAt: new Date().toISOString(),
+              }
+            : n
+        ),
+      }));
+      const serverId = await persistUpdateNote(id, {
+        title: title || "Untitled Note",
+        content,
+      });
+      if (!serverId) {
+        setSaveStatus("unsaved");
+        return;
+      }
+      if (serverId !== id) {
+        useProgressStore.setState((s) => ({
+          notes: s.notes.map((n) => (n.id === id ? { ...n, id: serverId } : n)),
+        }));
+        setSelectedId((prev) => (prev === id ? serverId : prev));
+      }
       setSaveStatus("saved");
     },
-    [updateNote]
+    []
   );
 
   const scheduleSave = useCallback(
@@ -255,7 +281,7 @@ export function NotesWorkspace() {
       setSaveStatus("unsaved");
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        flushSave(id, title, content);
+        void flushSave(id, title, content);
       }, SAVE_DELAY_MS);
     },
     [flushSave]

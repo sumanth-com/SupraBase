@@ -503,8 +503,23 @@ const MessageRow = memo(function MessageRow({
             )}
           </div>
 
-          {message.status === "error" && message.error ? (
-            <p className="mt-2 text-sm text-rose-600">{message.error}</p>
+          {message.status === "error" ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <p className="text-sm text-rose-600">
+                {message.error || "Something went wrong while generating a reply."}
+              </p>
+              {isLastAssistant ? (
+                <button
+                  type="button"
+                  disabled={isStreaming}
+                  onClick={() => onRegenerate(message.id)}
+                  className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-xs font-medium text-rose-200 hover:bg-rose-500/20 disabled:opacity-40"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  Retry
+                </button>
+              ) : null}
+            </div>
           ) : null}
 
           {message.status === "complete" && message.content ? (
@@ -1233,7 +1248,7 @@ export function MentorChatPane({
           stickToBottomRef.current = distanceFromBottom < 160;
         }}
       >
-        {isLoading && !pendingLocalMessage ? (
+        {isLoading && !pendingLocalMessage && messages.length === 0 ? (
           <div className="mx-auto max-w-[760px] space-y-4 px-4 py-8">
             {[0, 1, 2].map((i) => (
               <div
