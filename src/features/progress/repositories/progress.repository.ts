@@ -15,6 +15,7 @@ import {
   type LearnerWorkspace,
 } from "@/features/progress/lib/workspace-mapper";
 import { createDefaultModuleGates } from "@/lib/module-progress";
+import { isUuid } from "@/lib/is-uuid";
 
 type Client = SupabaseClient<Database>;
 
@@ -313,23 +314,29 @@ export class ProgressRepository {
     profileId: string,
     note: Partial<LearnerNoteRow> & { id?: string }
   ) {
-    if (note.id) {
+    // Client temp ids (note-… / local-…) are not UUIDs. Those must INSERT.
+    // Real UUIDs upsert so create+edit both persist the same row.
+    if (note.id && isUuid(note.id)) {
       const { data, error } = await this.client
         .from("learner_notes")
-        .update({
-          title: note.title,
-          content: note.content,
-          week_id: note.week_id,
-          pinned: note.pinned,
-          accent: note.accent,
-        } as never)
-        .eq("id", note.id)
-        .eq("profile_id", profileId)
+        .upsert(
+          {
+            id: note.id,
+            profile_id: profileId,
+            title: note.title ?? "",
+            content: note.content ?? "",
+            week_id: note.week_id ?? null,
+            pinned: note.pinned ?? false,
+            accent: note.accent ?? null,
+          } as never,
+          { onConflict: "id" }
+        )
         .select("*")
         .single();
       if (error) throw error;
       return data as LearnerNoteRow;
     }
+
     const { data, error } = await this.client
       .from("learner_notes")
       .insert({

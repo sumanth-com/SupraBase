@@ -48,12 +48,15 @@ import { COMMUNICATION_WEEKS } from "@/curriculum/communication-skills";
 import { createIdbPersistStorage } from "@/lib/idb-persist-storage";
 import { publishLiveActivity } from "@/lib/live-activity-sync";
 import { EXPORT_APP_ID, PERSIST_KEY } from "@/lib/client-persistence";
-import { registerProgressWorkspaceReset } from "@/lib/client-workspace";
 import {
+  registerProgressWorkspaceRehydrate,
+  registerProgressWorkspaceReset,
+} from "@/lib/client-workspace";
+import {
+  persistEntityComplete,
   syncAssignmentMeta,
   syncBookmark,
   syncDeleteNote,
-  syncEntityComplete,
   syncEntityNote,
   syncModuleGates,
   syncPreferences,
@@ -341,7 +344,30 @@ export const useProgressStore = create<ProgressStore>()(
             profile: syncDerivedProfile(state.profile, stats, currentWeek),
           };
         });
-        syncEntityComplete(entityId, nowDone, 10);
+        void persistEntityComplete(entityId, nowDone, 10).then((ok) => {
+          if (ok) return;
+          set((state) => {
+            const completed = { ...state.progress.completed, [entityId]: Boolean(wasDone) };
+            const completionDates = { ...state.progress.completionDates };
+            if (wasDone) {
+              completionDates[entityId] =
+                completionDates[entityId] ?? todayIso();
+            } else {
+              delete completionDates[entityId];
+            }
+            const progress = syncModuleUnlocks({
+              ...state.progress,
+              completed,
+              completionDates,
+            });
+            const stats = computeGlobalStats(getCurriculumWeeks(), progress);
+            const currentWeek = getCurrentWeekId(getCurriculumWeeks(), progress);
+            return {
+              progress,
+              profile: syncDerivedProfile(state.profile, stats, currentWeek),
+            };
+          });
+        });
         syncModuleGates(get().progress.moduleGates);
         if (nowDone) get().updateStreak();
       },
@@ -850,7 +876,14 @@ export const useProgressStore = create<ProgressStore>()(
 
       addNote: (note) => {
         set((s) => ({ notes: [...s.notes, note] }));
-        syncAddNote(note);
+        void syncAddNote(note).then((serverId) => {
+          if (!serverId || serverId === note.id) return;
+          set((s) => ({
+            notes: s.notes.map((n) =>
+              n.id === note.id ? { ...n, id: serverId } : n
+            ),
+          }));
+        });
       },
       updateNote: (id, updates) => {
         set((s) => ({
@@ -926,12 +959,16 @@ registerProgressWorkspaceReset(() => {
   useProgressStore.setState(createEmptyStoreSlice());
 });
 
+registerProgressWorkspaceRehydrate(async () => {
+  await useProgressStore.persist.rehydrate();
+});
+
 /** Load authoritative progress from Supabase into the in-memory store. */
 export async function rehydrateProgressWorkspace() {
   const { fetchLearnerWorkspace } = await import(
     "@/features/progress/lib/progress-sync"
   );
-  const workspace = await fetchLearnerWorkspace();
+  const { workspace } = await fetchLearnerWorkspace();
   if (workspace) {
     useProgressStore.getState().hydrateFromServer(workspace);
   }

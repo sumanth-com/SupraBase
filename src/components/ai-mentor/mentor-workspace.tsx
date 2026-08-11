@@ -147,6 +147,17 @@ export function MentorWorkspace() {
     [pathname, router, searchParams]
   );
 
+  const restoredConversationRef = useRef(false);
+  useEffect(() => {
+    if (restoredConversationRef.current) return;
+    if (activeId || bootAsk) return;
+    if (debouncedSearch) return;
+    const latest = conversations[0];
+    if (!latest?.id) return;
+    restoredConversationRef.current = true;
+    selectConversation(latest.id);
+  }, [activeId, bootAsk, conversations, debouncedSearch, selectConversation]);
+
   useEffect(() => {
     if (!bootAsk || bootAskHandled.current) return;
     bootAskHandled.current = true;

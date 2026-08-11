@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { ensureProfile, formatDbError } from "@/lib/supabase/ensure-profile";
+import { isUuid } from "@/lib/is-uuid";
 import { ProgressRepository } from "@/features/progress/repositories/progress.repository";
 import type { LearnerWorkspace } from "@/features/progress/lib/workspace-mapper";
 import type {
@@ -19,6 +21,8 @@ async function requireUser() {
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  if (!user) return { supabase, user: null };
+  await ensureProfile(supabase, user);
   return { supabase, user };
 }
 
@@ -32,11 +36,9 @@ export async function getLearnerWorkspaceAction(): Promise<
     const workspace = await repo.getWorkspace(user.id);
     return { success: true, data: { workspace } };
   } catch (error) {
-    return {
-      success: false,
-      error:
-        error instanceof Error ? error.message : "Failed to load progress.",
-    };
+    const message = formatDbError(error, "Failed to load progress.");
+    console.error("[progress] getLearnerWorkspaceAction", error);
+    return { success: false, error: message };
   }
 }
 
@@ -56,11 +58,7 @@ export async function setEntityCompleteAction(input: {
       sourceKey: input.sourceKey,
     });
     // Dual-write CMS lesson_progress when entity looks like a lesson uuid
-    if (
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-        input.entityId
-      )
-    ) {
+    if (isUuid(input.entityId)) {
       await supabase.from("lesson_progress").upsert(
         {
           lesson_id: input.entityId,
@@ -76,11 +74,9 @@ export async function setEntityCompleteAction(input: {
     revalidatePath("/dashboard");
     return { success: true, data: { result } };
   } catch (error) {
-    return {
-      success: false,
-      error:
-        error instanceof Error ? error.message : "Failed to update progress.",
-    };
+    const message = formatDbError(error, "Failed to update progress.");
+    console.error("[progress] setEntityCompleteAction", input.entityId, error);
+    return { success: false, error: message };
   }
 }
 
@@ -224,10 +220,9 @@ export async function upsertLearnerNoteAction(input: {
     });
     return { success: true, data: { id: row.id } };
   } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Failed to save note.",
-    };
+    const message = formatDbError(error, "Failed to save note.");
+    console.error("[progress] upsertLearnerNoteAction", error);
+    return { success: false, error: message };
   }
 }
 

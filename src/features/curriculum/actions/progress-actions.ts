@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { ensureProfile, formatDbError } from "@/lib/supabase/ensure-profile";
 import { ProgressService } from "@/features/curriculum/services/progress.service";
 import { LessonsRepository } from "@/features/curriculum/repositories/lessons.repository";
 import { ModulesRepository } from "@/features/curriculum/repositories/modules.repository";
@@ -29,6 +30,7 @@ export async function toggleLessonCompleteAction(
   }
 
   try {
+    await ensureProfile(supabase, user);
     const progress = new ProgressService(supabase);
     const next = !currentlyCompleted;
     if (next) {
@@ -38,12 +40,13 @@ export async function toggleLessonCompleteAction(
     }
 
     // Dual-write into universal entity_progress via atomic RPC
-    await supabase.rpc("complete_entity", {
+    const { error: entityError } = await supabase.rpc("complete_entity", {
       p_entity_id: lessonId,
       p_xp: next ? 10 : 0,
       p_source_key: next ? `lesson:${lessonId}` : undefined,
       p_completed: next,
     } as never);
+    if (entityError) throw entityError;
 
     const lessonsRepo = new LessonsRepository(supabase);
     const modulesRepo = new ModulesRepository(supabase);
@@ -62,8 +65,8 @@ export async function toggleLessonCompleteAction(
 
     return { success: true, completed: next };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unable to update progress.";
+    const message = formatDbError(error, "Unable to update progress.");
+    console.error("[progress] toggleLessonCompleteAction", lessonId, error);
     return { success: false, error: message };
   }
 }

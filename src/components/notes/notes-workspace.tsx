@@ -179,7 +179,7 @@ function wordCount(html: string) {
 
 function createBlankNote(): AppNote {
   return {
-    id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    id: crypto.randomUUID(),
     title: "Untitled Note",
     content: "",
     updatedAt: new Date().toISOString(),

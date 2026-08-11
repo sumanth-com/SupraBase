@@ -75,15 +75,23 @@ export async function purgeLegacyUnscopedClientData(): Promise<void> {
 export type ClientWorkspaceReset = () => void;
 
 let progressReset: ClientWorkspaceReset | null = null;
+let progressRehydrate: (() => Promise<void>) | null = null;
 
 /** Registered by the progress store so logout/switch can wipe in-memory state. */
 export function registerProgressWorkspaceReset(reset: ClientWorkspaceReset) {
   progressReset = reset;
 }
 
+/** Rehydrate the scoped persist bucket after persistUserId is set. */
+export function registerProgressWorkspaceRehydrate(fn: () => Promise<void>) {
+  progressRehydrate = fn;
+}
+
 /**
  * Bind all client persistence to the authenticated user.
  * Rehydrates that user's bucket; never copies unscoped legacy data.
+ * Does not wipe in-memory state on first bind after reload — that would
+ * persist an empty snapshot over the user's cache before the server fetch.
  */
 export async function bindClientWorkspace(userId: string): Promise<void> {
   if (typeof window === "undefined") return;
@@ -93,12 +101,19 @@ export async function bindClientWorkspace(userId: string): Promise<void> {
     return;
   }
 
+  const previousUserId = activeUserId;
+
   // Purge shared keys before scoping so they never migrate into a user bucket.
   await purgeLegacyUnscopedClientData();
 
   activeUserId = userId;
   setIdbPersistUserId(userId);
-  progressReset?.();
+
+  if (previousUserId && previousUserId !== userId) {
+    progressReset?.();
+  }
+
+  await progressRehydrate?.();
   notify(userId);
 }
 
